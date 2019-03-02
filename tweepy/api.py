@@ -1487,7 +1487,7 @@ class API(object):
                 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'
             }
 
-        body = b'\r\n'.join(body)
+        body = b'\r\n'.join(body).decode()
         # build headers
         headers['Content-Length'] = str(len(body))
 
