@@ -1,9 +1,8 @@
 import unittest
 import random
 import shutil
-import time
+from time import sleep
 import os
-from ast import literal_eval
 
 from nose import SkipTest
 
@@ -32,18 +31,6 @@ class TweepyErrorTests(unittest.TestCase):
 
 
 class TweepyAPITests(TweepyTestCase):
-
-    #@tape.use_cassette('testfailure.json')
-    #def testapierror(self):
-    #    from tweepy.error import TweepError
-    #
-    #    with self.assertRaises(TweepError) as cm:
-    #        self.api.direct_messages()
-    #
-    #    reason, = literal_eval(cm.exception.reason)
-    #    self.assertEqual(reason['message'], 'Bad Authentication data.')
-    #    self.assertEqual(reason['code'], 215)
-    #    self.assertEqual(cm.exception.api_code, 215)
 
     # TODO: Actually have some sort of better assertion
     @tape.use_cassette('testgetoembed.json')
@@ -92,8 +79,9 @@ class TweepyAPITests(TweepyTestCase):
     @tape.use_cassette('testupdateanddestroystatus.json')
     def testupdateanddestroystatus(self):
         # test update
-        update = self.api.update_status(status=tweet_text)
-        self.assertEqual(update.text, tweet_text)
+        text = tweet_text if use_replay else 'testing %i' % random.randint(0, 1000)
+        update = self.api.update_status(status=text)
+        self.assertEqual(update.text, text)
 
         # test destroy
         deleted = self.api.destroy_status(id=update.id)
@@ -102,8 +90,9 @@ class TweepyAPITests(TweepyTestCase):
     @tape.use_cassette('testupdateanddestroystatus.json')
     def testupdateanddestroystatuswithoutkwarg(self):
         # test update, passing text as a positional argument (#554)
-        update = self.api.update_status(tweet_text)
-        self.assertEqual(update.text, tweet_text)
+        text = tweet_text if use_replay else 'testing %i' % random.randint(0, 1000)
+        update = self.api.update_status(text)
+        self.assertEqual(update.text, text)
 
         # test destroy
         deleted = self.api.destroy_status(id=update.id)
@@ -112,7 +101,7 @@ class TweepyAPITests(TweepyTestCase):
     @tape.use_cassette('testupdatestatuswithmedia.yaml', serializer='yaml')
     def testupdatestatuswithmedia(self):
         update = self.api.update_with_media('examples/banner.png', status=tweet_text)
-        self.assertIn(tweet_text + ' https://t.co', update.text)
+        self.assertIn(tweet_text + ' http://t.co', update.text)
 
     @tape.use_cassette('testgetuser.json')
     def testgetuser(self):
@@ -182,6 +171,10 @@ class TweepyAPITests(TweepyTestCase):
         enemy = self.api.destroy_friendship('twitter')
         self.assertEqual(enemy.screen_name, 'twitter')
 
+        # Wait 5 seconds to allow Twitter time
+        # to process the friendship destroy request.
+        sleep(5)
+
         friend = self.api.create_friendship('twitter')
         self.assertEqual(friend.screen_name, 'twitter')
 
@@ -232,16 +225,20 @@ class TweepyAPITests(TweepyTestCase):
     @tape.use_cassette('testupdateprofilecolors.json')
     def testupdateprofilecolors(self):
         original = self.api.me()
-        updated = self.api.update_profile(profile_link_color='D0F900')
+        updated = self.api.update_profile_colors('000', '000', '000', '000', '000')
 
         # restore colors
-        self.api.update_profile(
-            profile_link_color=original.profile_link_color,
+        self.api.update_profile_colors(
+            original.profile_background_color,
+            original.profile_text_color,
+            original.profile_link_color,
+            original.profile_sidebar_fill_color,
+            original.profile_sidebar_border_color
         )
 
         self.assertEqual(updated.profile_background_color, '000000')
         self.assertEqual(updated.profile_text_color, '000000')
-        self.assertEqual(updated.profile_link_color, 'D0F900')
+        self.assertEqual(updated.profile_link_color, '000000')
         self.assertEqual(updated.profile_sidebar_fill_color, '000000')
         self.assertEqual(updated.profile_sidebar_border_color, '000000')
 
@@ -341,6 +338,7 @@ class TweepyAPITests(TweepyTestCase):
             self.assertEqual(l.name, params['slug'])
 
         assert_list(self.api.add_list_member(**params))
+        sleep(3)
         assert_list(self.api.remove_list_member(**params))
 
     @tape.use_cassette('testaddremovelistmembers.json')
@@ -397,7 +395,7 @@ class TweepyAPITests(TweepyTestCase):
     def testgeoapis(self):
         def place_name_in_list(place_name, place_list):
             """Return True if a given place_name is in place_list."""
-            return any(x.full_name.lower() == place_name.lower() for x in place_list)
+            return any([x.full_name.lower() == place_name.lower() for x in place_list])
 
         twitter_hq = self.api.geo_similar_places(lat='37.7821120598956',
                                                  long='-122.400612831116',
@@ -407,7 +405,7 @@ class TweepyAPITests(TweepyTestCase):
         # Test various API functions using Austin, TX, USA
         self.assertEqual(self.api.geo_id(id='1ffd3558f2e98349').full_name, 'Dogpatch, San Francisco')
         self.assertTrue(place_name_in_list('Austin, TX',
-            self.api.reverse_geocode(lat=30.2673701685, long= -97.7426147461))) # Austin, TX, USA
+            self.api.reverse_geocode(lat=30.267370168467806, long= -97.74261474609375))) # Austin, TX, USA
 
     @tape.use_cassette('testsupportedlanguages.json')
     def testsupportedlanguages(self):
@@ -427,22 +425,9 @@ class TweepyAPITests(TweepyTestCase):
         self.api.home_timeline()
         self.assertTrue(self.api.cached_result)
 
-    @tape.use_cassette('testcachedresult.json')
-    def testcachedifferentqueryparameters(self):
-        self.api.cache = MemoryCache()
-
-        user1 = self.api.get_user('TheTweepyTester')
-        self.assertFalse(self.api.cached_result)
-        self.assertEquals('TheTweepyTester', user1.screen_name)
-
-        user2 = self.api.get_user('tweepytest')
-        self.assertEquals('tweepytest', user2.screen_name)
-        self.assertFalse(self.api.cached_result)
-
-
 
 class TweepyCacheTests(unittest.TestCase):
-    timeout = 0.5
+    timeout = 2.0
     memcache_servers = ['127.0.0.1:11211']  # must be running for test to pass
 
     def _run_tests(self, do_cleanup=True):
@@ -452,14 +437,14 @@ class TweepyCacheTests(unittest.TestCase):
             'Stored value does not match retrieved value')
 
         # test timeout
-        time.sleep(self.timeout)
+        sleep(self.timeout)
         self.assertEqual(self.cache.get('testkey'), None,
             'Cache entry should have expired')
 
         # test cleanup
         if do_cleanup:
             self.cache.store('testkey', 'testvalue')
-            time.sleep(self.timeout)
+            sleep(self.timeout)
             self.cache.cleanup()
             self.assertEqual(self.cache.count(), 0, 'Cache cleanup failed')
 
@@ -485,6 +470,7 @@ class TweepyCacheTests(unittest.TestCase):
         finally:
             if os.path.exists('cache_test_dir'):
                 shutil.rmtree('cache_test_dir')
+
 
 if __name__ == '__main__':
     unittest.main()
