@@ -1441,7 +1441,7 @@ class API(object):
         body = list()
         if command == 'init':
             body.append(
-                urllib.urlencode({
+                urllib.parse.urlencode({
                     'command': 'INIT',
                     'media_type': file_type,
                     'total_bytes': file_size
