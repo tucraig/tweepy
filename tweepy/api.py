@@ -5,7 +5,6 @@
 from __future__ import print_function
 
 import os
-import re
 import mimetypes
 
 import six
@@ -1488,7 +1487,7 @@ class API(object):
                 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'
             }
 
-        body = b'\r\n'.join([re.sub("[^a-zA-Z]", " ", i) for i in body])
+        body = b'\r\n'.join(body)
         # build headers
         headers['Content-Length'] = str(len(body))
 
