@@ -8,10 +8,11 @@ import os
 import mimetypes
 
 import six
+import urllib
 
 from tweepy.binder import bind_api
 from tweepy.error import TweepError
-from tweepy.parsers import ModelParser, Parser
+from tweepy.parsers import ModelParser, Parser, RawParser
 from tweepy.utils import list_to_csv
 
 
@@ -94,35 +95,34 @@ class API(object):
         )
 
     def statuses_lookup(self, id_, include_entities=None,
-                        trim_user=None, map_=None, tweet_mode=None):
+                        trim_user=None, map_=None):
         return self._statuses_lookup(list_to_csv(id_), include_entities,
-                                     trim_user, map_, tweet_mode)
+                                     trim_user, map_)
 
     @property
     def _statuses_lookup(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/statuses/lookup
-            :allowed_param:'id', 'include_entities', 'trim_user', 'map', 'tweet_mode'
+            :allowed_param:'id', 'include_entities', 'trim_user', 'map'
         """
         return bind_api(
             api=self,
             path='/statuses/lookup.json',
             payload_type='status', payload_list=True,
-            allowed_param=['id', 'include_entities', 'trim_user', 'map', 'tweet_mode'],
+            allowed_param=['id', 'include_entities', 'trim_user', 'map'],
             require_auth=True
         )
 
     @property
     def user_timeline(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/statuses/user_timeline
-            :allowed_param:'id', 'user_id', 'screen_name', 'since_id', 'max_id', 'count', 'include_rts', 'trim_user', 'exclude_replies'
+            :allowed_param:'id', 'user_id', 'screen_name', 'since_id'
         """
         return bind_api(
             api=self,
             path='/statuses/user_timeline.json',
             payload_type='status', payload_list=True,
             allowed_param=['id', 'user_id', 'screen_name', 'since_id',
-                           'max_id', 'count', 'include_rts', 'trim_user',
-                           'exclude_replies']
+                           'max_id', 'count', 'include_rts']
         )
 
     @property
@@ -178,7 +178,7 @@ class API(object):
 
     def update_status(self, *args, **kwargs):
         """ :reference: https://dev.twitter.com/rest/reference/post/statuses/update
-            :allowed_param:'status', 'in_reply_to_status_id', 'in_reply_to_status_id_str', 'auto_populate_reply_metadata', 'lat', 'long', 'source', 'place_id', 'display_coordinates', 'media_ids'
+            :allowed_param:'status', 'in_reply_to_status_id', 'lat', 'long', 'source', 'place_id', 'display_coordinates', 'media_ids'
         """
         post_data = {}
         media_ids = kwargs.pop("media_ids", None)
@@ -190,7 +190,7 @@ class API(object):
             path='/statuses/update.json',
             method='POST',
             payload_type='status',
-            allowed_param=['status', 'in_reply_to_status_id', 'in_reply_to_status_id_str', 'auto_populate_reply_metadata', 'lat', 'long', 'source', 'place_id', 'display_coordinates'],
+            allowed_param=['status', 'in_reply_to_status_id', 'lat', 'long', 'source', 'place_id', 'display_coordinates'],
             require_auth=True
         )(post_data=post_data, *args, **kwargs)
 
@@ -199,7 +199,7 @@ class API(object):
             :allowed_param:
         """
         f = kwargs.pop('file', None)
-        headers, post_data = API._pack_image(filename, 4883, form_field='media', f=f)
+        headers, post_data = API._pack_image(filename, 3072, form_field='media', f=f)
         kwargs.update({'headers': headers, 'post_data': post_data})
 
         return bind_api(
@@ -212,9 +212,63 @@ class API(object):
             upload_api=True
         )(*args, **kwargs)
 
+    def video_upload(self, filename, *args, **kwargs):
+        """ :reference https://dev.twitter.com/rest/reference/post/media/upload-chunked
+            :allowed_param:
+        """
+        f = kwargs.pop('file', None)
+        # Initialize upload (Twitter cannot handle videos > 15 MB)
+        headers, post_data, fp = API._chunk_video('init', filename, 15360, form_field='media', f=f)
+        kwargs.update({ 'headers': headers, 'post_data': post_data })
+
+        # Send the INIT request
+        media_info = bind_api(
+            api=self,
+            path='/media/upload.json',
+            method='POST',
+            payload_type='media',
+            allowed_param=[],
+            require_auth=True,
+            upload_api=True
+        )(*args, **kwargs)
+
+        # If a media ID has been generated, we can send the file
+        if media_info.media_id:
+            chunk_size = kwargs.pop('chunk_size', 4096)
+            fsize = os.path.getsize(filename)
+            nloops = int(fsize / chunk_size) + (1 if fsize % chunk_size > 0 else 0)
+            for i in range(nloops):
+                headers, post_data, fp = API._chunk_video('append', filename, 15360, chunk_size=chunk_size, f=fp, media_id=media_info.media_id, segment_index=i)
+                kwargs.update({ 'headers': headers, 'post_data': post_data, 'parser': RawParser() })
+                # The APPEND command returns an empty response body
+                bind_api(
+                    api=self,
+                    path='/media/upload.json',
+                    method='POST',
+                    payload_type='media',
+                    allowed_param=[],
+                    require_auth=True,
+                    upload_api=True
+                )(*args, **kwargs)
+            # When all chunks have been sent, we can finalize.
+            headers, post_data, fp = API._chunk_video('finalize', filename, 15360, media_id=media_info.media_id)
+            kwargs.update({ 'headers': headers, 'post_data': post_data })
+            # The FINALIZE command returns media information
+            return bind_api(
+                api=self,
+                path='/media/upload.json',
+                method='POST',
+                payload_type='media',
+                allowed_param=[],
+                require_auth=True,
+                upload_api=True
+            )(*args, **kwargs)
+        else:
+            return media_info
+
     def update_with_media(self, filename, *args, **kwargs):
         """ :reference: https://dev.twitter.com/rest/reference/post/statuses/update_with_media
-            :allowed_param:'status', 'possibly_sensitive', 'in_reply_to_status_id', 'in_reply_to_status_id_str', 'auto_populate_reply_metadata', 'lat', 'long', 'place_id', 'display_coordinates'
+            :allowed_param:'status', 'possibly_sensitive', 'in_reply_to_status_id', 'lat', 'long', 'place_id', 'display_coordinates'
         """
         f = kwargs.pop('file', None)
         headers, post_data = API._pack_image(filename, 3072, form_field='media[]', f=f)
@@ -226,8 +280,8 @@ class API(object):
             method='POST',
             payload_type='status',
             allowed_param=[
-                'status', 'possibly_sensitive', 'in_reply_to_status_id', 'in_reply_to_status_id_str',
-                'auto_populate_reply_metadata', 'lat', 'long', 'place_id', 'display_coordinates'
+                'status', 'possibly_sensitive', 'in_reply_to_status_id', 'lat', 'long',
+                'place_id', 'display_coordinates'
             ],
             require_auth=True
         )(*args, **kwargs)
@@ -254,20 +308,6 @@ class API(object):
         return bind_api(
             api=self,
             path='/statuses/retweet/{id}.json',
-            method='POST',
-            payload_type='status',
-            allowed_param=['id'],
-            require_auth=True
-        )
-
-    @property
-    def unretweet(self):
-        """ :reference: https://dev.twitter.com/rest/reference/post/statuses/unretweet/%3Aid
-            :allowed_param:'id'
-        """
-        return bind_api(
-            api=self,
-            path='/statuses/unretweet/{id}.json',
             method='POST',
             payload_type='status',
             allowed_param=['id'],
@@ -323,8 +363,8 @@ class API(object):
             allowed_param=['id', 'url', 'maxwidth', 'hide_media', 'omit_script', 'align', 'related', 'lang']
         )
 
-    def lookup_users(self, user_ids=None, screen_names=None, include_entities=None, tweet_mode=None):
-        """ Perform bulk look up of users from user ID or screen_name """
+    def lookup_users(self, user_ids=None, screen_names=None, include_entities=None):
+        """ Perform bulk look up of users from user ID or screenname """
         post_data = {}
         if include_entities is not None:
             include_entities = 'true' if include_entities else 'false'
@@ -333,22 +373,19 @@ class API(object):
             post_data['user_id'] = list_to_csv(user_ids)
         if screen_names:
             post_data['screen_name'] = list_to_csv(screen_names)
-        if tweet_mode:
-            post_data['tweet_mode'] = tweet_mode
 
         return self._lookup_users(post_data=post_data)
 
     @property
     def _lookup_users(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/users/lookup
-            allowed_param='user_id', 'screen_name', 'include_entities', 'tweet_mode'
+            allowed_param='user_id', 'screen_name', 'include_entities'
         """
         return bind_api(
             api=self,
             path='/users/lookup.json',
             payload_type='user', payload_list=True,
             method='POST',
-            allowed_param=['user_id', 'screen_name', 'include_entities', 'tweet_mode']
         )
 
     def me(self):
@@ -410,39 +447,39 @@ class API(object):
     @property
     def direct_messages(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/direct_messages
-            :allowed_param:'since_id', 'max_id', 'count', 'full_text'
+            :allowed_param:'since_id', 'max_id', 'count'
         """
         return bind_api(
             api=self,
             path='/direct_messages.json',
             payload_type='direct_message', payload_list=True,
-            allowed_param=['since_id', 'max_id', 'count', 'full_text'],
+            allowed_param=['since_id', 'max_id', 'count'],
             require_auth=True
         )
 
     @property
     def get_direct_message(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/direct_messages/show
-            :allowed_param:'id', 'full_text'
+            :allowed_param:'id'
         """
         return bind_api(
             api=self,
             path='/direct_messages/show/{id}.json',
             payload_type='direct_message',
-            allowed_param=['id', 'full_text'],
+            allowed_param=['id'],
             require_auth=True
         )
 
     @property
     def sent_direct_messages(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/direct_messages/sent
-            :allowed_param:'since_id', 'max_id', 'count', 'page', 'full_text'
+            :allowed_param:'since_id', 'max_id', 'count', 'page'
         """
         return bind_api(
             api=self,
             path='/direct_messages/sent.json',
             payload_type='direct_message', payload_list=True,
-            allowed_param=['since_id', 'max_id', 'count', 'page', 'full_text'],
+            allowed_param=['since_id', 'max_id', 'count', 'page'],
             require_auth=True
         )
 
@@ -505,7 +542,7 @@ class API(object):
     @property
     def show_friendship(self):
         """ :reference: https://dev.twitter.com/rest/reference/get/friendships/show
-            :allowed_param:'source_id', 'source_screen_name', 'target_id', 'target_screen_name'
+            :allowed_param:'source_id', 'source_screen_name'
         """
         return bind_api(
             api=self,
@@ -679,6 +716,24 @@ class API(object):
             require_auth=True
         )
 
+    @property
+    def update_profile_colors(self):
+        """ :reference: https://dev.twitter.com/docs/api/1.1/post/account/update_profile_colors
+            :allowed_param:'profile_background_color', 'profile_text_color',
+             'profile_link_color', 'profile_sidebar_fill_color',
+             'profile_sidebar_border_color'],
+        """
+        return bind_api(
+            api=self,
+            path='/account/update_profile_colors.json',
+            method='POST',
+            payload_type='user',
+            allowed_param=['profile_background_color', 'profile_text_color',
+                           'profile_link_color', 'profile_sidebar_fill_color',
+                           'profile_sidebar_border_color'],
+            require_auth=True
+        )
+
     def update_profile_image(self, filename, file_=None):
         """ :reference: https://dev.twitter.com/rest/reference/post/account/update_profile_image
             :allowed_param:'include_entities', 'skip_status'
@@ -725,14 +780,14 @@ class API(object):
     @property
     def update_profile(self):
         """ :reference: https://dev.twitter.com/rest/reference/post/account/update_profile
-            :allowed_param:'name', 'url', 'location', 'description', 'profile_link_color'
+            :allowed_param:'name', 'url', 'location', 'description'
         """
         return bind_api(
             api=self,
             path='/account/update_profile.json',
             method='POST',
             payload_type='user',
-            allowed_param=['name', 'url', 'location', 'description', 'profile_link_color'],
+            allowed_param=['name', 'url', 'location', 'description'],
             require_auth=True
         )
 
@@ -803,46 +858,6 @@ class API(object):
             allowed_param=['id', 'user_id', 'screen_name'],
             require_auth=True
         )
-
-    @property
-    def mutes_ids(self):
-        """ :reference: https://dev.twitter.com/rest/reference/get/mutes/users/ids """
-        return bind_api(
-            api=self,
-            path='/mutes/users/ids.json',
-            payload_type='json',
-            require_auth=True
-        )
-
-    @property
-    def create_mute(self):
-        """ :reference: https://dev.twitter.com/rest/reference/post/mutes/users/create
-            :allowed_param:'id', 'user_id', 'screen_name'
-        """
-        return bind_api(
-            api=self,
-            path='/mutes/users/create.json',
-            method='POST',
-            payload_type='user',
-            allowed_param=['id', 'user_id', 'screen_name'],
-            require_auth=True
-        )
-
-    @property
-    def destroy_mute(self):
-        """ :reference: https://dev.twitter.com/rest/reference/post/mutes/users/destroy
-            :allowed_param:'id', 'user_id', 'screen_name'
-        """
-        return bind_api(
-            api=self,
-            path='/mutes/users/destroy.json',
-            method='POST',
-            payload_type='user',
-            allowed_param=['id', 'user_id', 'screen_name'],
-            require_auth=True
-        )
-
-
 
     @property
     def blocks(self):
@@ -1248,7 +1263,7 @@ class API(object):
         """ :reference: https://dev.twitter.com/rest/reference/get/search/tweets
             :allowed_param:'q', 'lang', 'locale', 'since_id', 'geocode',
              'max_id', 'since', 'until', 'result_type', 'count',
-              'include_entities', 'from', 'to', 'source'
+              'include_entities', 'from', 'to', 'source']
         """
         return bind_api(
             api=self,
@@ -1366,7 +1381,7 @@ class API(object):
             filename = filename.encode("utf-8")
 
         BOUNDARY = b'Tw3ePy'
-        body = []
+        body = list()
         body.append(b'--' + BOUNDARY)
         body.append('Content-Disposition: form-data; name="{0}";'
                     ' filename="{1}"'.format(form_field, filename)
@@ -1386,3 +1401,94 @@ class API(object):
         }
 
         return headers, body
+
+    @staticmethod
+    def _chunk_video(command, filename, max_size, form_field="media", chunk_size=4096, f=None, media_id=None, segment_index=0):
+        fp = None
+        if command == 'init':
+            if f is None:
+                file_size = os.path.getsize(filename)
+                try:
+                    if file_size > (max_size * 1024):
+                        raise TweepError('File is too big, must be less than %skb.' % max_size)
+                except os.error as e:
+                    raise TweepError('Unable to access file: %s' % e.strerror)
+
+                # build the mulitpart-formdata body
+                fp = open(filename, 'rb')
+            else:
+                f.seek(0, 2)  # Seek to end of file
+                file_size = f.tell()
+                if file_size > (max_size * 1024):
+                    raise TweepError('File is too big, must be less than %skb.' % max_size)
+                f.seek(0)  # Reset to beginning of file
+                fp = f
+        elif command != 'finalize':
+            if f is not None:
+                fp = f
+            else:
+                raise TweepError('File input for APPEND is mandatory.')
+
+        # video must be mp4
+        file_type = mimetypes.guess_type(filename)
+        if file_type is None:
+            raise TweepError('Could not determine file type')
+        file_type = file_type[0]
+        if file_type not in ['video/mp4']:
+            raise TweepError('Invalid file type for video: %s' % file_type)
+
+        BOUNDARY = b'Tw3ePy'
+        body = list()
+        if command == 'init':
+            body.append(
+                urllib.urlencode({
+                    'command': 'INIT',
+                    'media_type': file_type,
+                    'total_bytes': file_size
+                })
+            )
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'
+            }
+        elif command == 'append':
+            if media_id is None:
+                raise TweepError('Media ID is required for APPEND command.')
+            body.append(b'--' + BOUNDARY)
+            body.append('Content-Disposition: form-data; name="command"'.encode('utf-8'))
+            body.append(b'')
+            body.append(b'APPEND')
+            body.append(b'--' + BOUNDARY)
+            body.append('Content-Disposition: form-data; name="media_id"'.encode('utf-8'))
+            body.append(b'')
+            body.append(str(media_id).encode('utf-8'))
+            body.append(b'--' + BOUNDARY)
+            body.append('Content-Disposition: form-data; name="segment_index"'.encode('utf-8'))
+            body.append(b'')
+            body.append(str(segment_index).encode('utf-8'))
+            body.append(b'--' + BOUNDARY)
+            body.append('Content-Disposition: form-data; name="{0}"; filename="{1}"'.format(form_field, os.path.basename(filename)).encode('utf-8'))
+            body.append('Content-Type: {0}'.format(file_type).encode('utf-8'))
+            body.append(b'')
+            body.append(fp.read(chunk_size))
+            body.append(b'--' + BOUNDARY + b'--')
+            headers = {
+                'Content-Type': 'multipart/form-data; boundary=Tw3ePy'
+            }
+        elif command == 'finalize':
+            if media_id is None:
+                raise TweepError('Media ID is required for FINALIZE command.')
+            body.append(
+                urllib.urlencode({
+                    'command': 'FINALIZE',
+                    'media_id': media_id
+                })
+            )
+            headers = {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'
+            }
+
+        body = b'\r\n'.join(body)
+        # build headers
+        headers['Content-Length'] = str(len(body))
+
+        return headers, body, fp
