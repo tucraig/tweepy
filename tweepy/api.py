@@ -1484,8 +1484,7 @@ class API(object):
             body.append(
                 urlencode({
                     'command': 'INIT',
-                    # 'media_type': file_type,
-                    'media_type': 'video/mp4',
+                    'media_type': file_type,
                     'total_bytes': file_size
                 }).encode('utf-8')
             )
