@@ -1482,16 +1482,6 @@ class API(object):
         BOUNDARY = b'Tw3ePy'
         body = list()
         if command == 'init':
-<<<<<<< HEAD
-            query = {
-                'command': 'INIT',
-                'media_type': file_type,
-                'total_bytes': file_size,
-                'media_category': API._get_media_category(
-                    is_direct_message, file_type)
-            }
-            body.append(urlencode(query).encode('utf-8'))
-=======
             body.append(
                 urlencode({
                     'command': 'INIT',
@@ -1500,7 +1490,6 @@ class API(object):
                     'total_bytes': file_size
                 }).encode('utf-8')
             )
->>>>>>> parent of 264301e... revert changes
             headers = {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8'
             }
